@@ -13,9 +13,9 @@ SAMPLE_RATE = 44100
 
 # Réglages audio (surcharge via variables d'environnement)
 try:
-    AUDIO_BLOCKSIZE = int(os.environ.get("AUDIO_BLOCKSIZE", "4096"))
+    AUDIO_BLOCKSIZE = int(os.environ.get("AUDIO_BLOCKSIZE", "8192"))
 except ValueError:
-    AUDIO_BLOCKSIZE = 4096
+    AUDIO_BLOCKSIZE = 8192
 AUDIO_BLOCKSIZE = max(0, AUDIO_BLOCKSIZE)
 
 AUDIO_SAMPLE_RATE_ENV = os.environ.get("AUDIO_SAMPLE_RATE", "").strip()
@@ -33,6 +33,14 @@ except ValueError:
 AUDIO_STATUS_LOG_INTERVAL = max(0.0, AUDIO_STATUS_LOG_INTERVAL)
 
 AUDIO_LATENCY = os.environ.get("AUDIO_LATENCY", "high")
+
+AUDIO_SIMPLE = os.environ.get("AUDIO_SIMPLE", "0").lower() in ("1", "true", "yes")
+AUDIO_AUTO_SIMPLE = os.environ.get("AUDIO_AUTO_SIMPLE", "1").lower() in ("1", "true", "yes")
+try:
+    AUDIO_UNDERFLOW_LIMIT = int(os.environ.get("AUDIO_UNDERFLOW_LIMIT", "3"))
+except ValueError:
+    AUDIO_UNDERFLOW_LIMIT = 3
+AUDIO_UNDERFLOW_LIMIT = max(1, AUDIO_UNDERFLOW_LIMIT)
 
 IDLE_RPM = 900        # ralenti
 MAX_RPM = 7000        # régime max théorique
@@ -162,12 +170,14 @@ def poll_audio_status():
     Affiche les logs audio en dehors de la callback pour eviter les blocages I/O.
     """
     global _last_audio_log, _last_status_log, _status_count, _underflow_count, _last_status_text
+    global AUDIO_SIMPLE
     now = time.monotonic()
     if (
         _status_count
         and AUDIO_STATUS_LOG_INTERVAL > 0.0
         and now - _last_status_log > AUDIO_STATUS_LOG_INTERVAL
     ):
+        underflows = _underflow_count
         print(
             f"[AUDIO] PortAudio status: {_last_status_text} "
             f"(events={_status_count}, underflows={_underflow_count})"
@@ -175,6 +185,10 @@ def poll_audio_status():
         _status_count = 0
         _underflow_count = 0
         _last_status_log = now
+
+        if AUDIO_AUTO_SIMPLE and not AUDIO_SIMPLE and underflows >= AUDIO_UNDERFLOW_LIMIT:
+            AUDIO_SIMPLE = True
+            print("[AUDIO] Underflows detectes -> mode SIMPLE active.")
 
     if AUDIO_LOG_INTERVAL > 0.0 and now - _last_audio_log > AUDIO_LOG_INTERVAL:
         print(f"[AUDIO] rpm={engine_rpm:.0f} throttle={throttle:.2f}")
@@ -254,6 +268,18 @@ def engine_sample(rpm, frames, decel_amount=0.0):
     phase = (phase + phase_inc * frames) % (2.0 * math.pi)
 
     rpm_ratio = clamp((rpm - IDLE_RPM) / max(1.0, (MAX_RPM - IDLE_RPM)), 0.0, 1.0)
+
+    if AUDIO_SIMPLE:
+        fundamental = np.sin(phase_array)
+        pulses = np.abs(fundamental)
+        wave = fundamental * (0.6 + 0.4 * pulses)
+        wave = np.tanh(1.5 * wave)
+
+        base_volume = 0.30
+        volume = base_volume + 0.40 * rpm_ratio
+        volume = clamp(volume, 0.15, 1.0)
+
+        return (wave * volume).astype(np.float32)
 
     # ================= Tonal (harmoniques) =================
     fundamental = np.sin(phase_array)
