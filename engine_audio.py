@@ -11,6 +11,29 @@ import sounddevice as sd
 # ==========================
 SAMPLE_RATE = 44100
 
+# Réglages audio (surcharge via variables d'environnement)
+try:
+    AUDIO_BLOCKSIZE = int(os.environ.get("AUDIO_BLOCKSIZE", "4096"))
+except ValueError:
+    AUDIO_BLOCKSIZE = 4096
+AUDIO_BLOCKSIZE = max(0, AUDIO_BLOCKSIZE)
+
+AUDIO_SAMPLE_RATE_ENV = os.environ.get("AUDIO_SAMPLE_RATE", "").strip()
+
+try:
+    AUDIO_LOG_INTERVAL = float(os.environ.get("AUDIO_LOG_INTERVAL", "1.0"))
+except ValueError:
+    AUDIO_LOG_INTERVAL = 1.0
+AUDIO_LOG_INTERVAL = max(0.0, AUDIO_LOG_INTERVAL)
+
+try:
+    AUDIO_STATUS_LOG_INTERVAL = float(os.environ.get("AUDIO_STATUS_LOG_INTERVAL", "1.0"))
+except ValueError:
+    AUDIO_STATUS_LOG_INTERVAL = 1.0
+AUDIO_STATUS_LOG_INTERVAL = max(0.0, AUDIO_STATUS_LOG_INTERVAL)
+
+AUDIO_LATENCY = os.environ.get("AUDIO_LATENCY", "high")
+
 IDLE_RPM = 900        # ralenti
 MAX_RPM = 7000        # régime max théorique
 LIMIT_RPM = 6800      # rupteur (limiteur)
@@ -74,6 +97,15 @@ roar_state = 0.0
 hiss_state = 0.0
 
 _last_audio_log = 0.0  # log audio périodique
+_last_status_log = 0.0
+_status_count = 0
+_underflow_count = 0
+_last_status_text = ""
+
+_frame_idx = None
+_frame_idx_len = 0
+_cyl_offsets = None
+_cyl_offsets_cyl = None
 
 # Flux audio global (pour pouvoir stop proprement)
 _audio_stream = None
@@ -81,6 +113,72 @@ _audio_stream = None
 
 def clamp(x, a, b):
     return max(a, min(b, x))
+
+
+def _get_frame_idx(frames):
+    global _frame_idx, _frame_idx_len
+    if _frame_idx is None or _frame_idx_len != frames:
+        _frame_idx = np.arange(frames, dtype=np.float32)
+        _frame_idx_len = frames
+    return _frame_idx
+
+
+def _get_cyl_offsets():
+    global _cyl_offsets, _cyl_offsets_cyl, NUM_CYLINDERS
+    if _cyl_offsets is None or _cyl_offsets_cyl != NUM_CYLINDERS:
+        _cyl_offsets = np.linspace(
+            0.0, 2.0 * math.pi, NUM_CYLINDERS, endpoint=False, dtype=np.float32
+        )
+        _cyl_offsets_cyl = NUM_CYLINDERS
+    return _cyl_offsets
+
+
+def _resolve_sample_rate(device):
+    env = AUDIO_SAMPLE_RATE_ENV
+    if env:
+        if env.lower() not in ("device", "default"):
+            try:
+                rate = float(env)
+                if rate > 0:
+                    return rate
+            except ValueError:
+                pass
+    try:
+        query_dev = device
+        if query_dev is None:
+            default_dev = sd.default.device
+            if isinstance(default_dev, (tuple, list)) and len(default_dev) > 1:
+                query_dev = default_dev[1]
+            else:
+                query_dev = default_dev
+        info = sd.query_devices(query_dev)
+        return float(info.get("default_samplerate", SAMPLE_RATE))
+    except Exception:
+        return SAMPLE_RATE
+
+
+def poll_audio_status():
+    """
+    Affiche les logs audio en dehors de la callback pour eviter les blocages I/O.
+    """
+    global _last_audio_log, _last_status_log, _status_count, _underflow_count, _last_status_text
+    now = time.monotonic()
+    if (
+        _status_count
+        and AUDIO_STATUS_LOG_INTERVAL > 0.0
+        and now - _last_status_log > AUDIO_STATUS_LOG_INTERVAL
+    ):
+        print(
+            f"[AUDIO] PortAudio status: {_last_status_text} "
+            f"(events={_status_count}, underflows={_underflow_count})"
+        )
+        _status_count = 0
+        _underflow_count = 0
+        _last_status_log = now
+
+    if AUDIO_LOG_INTERVAL > 0.0 and now - _last_audio_log > AUDIO_LOG_INTERVAL:
+        print(f"[AUDIO] rpm={engine_rpm:.0f} throttle={throttle:.2f}")
+        _last_audio_log = now
 
 
 def apply_preset(key: str):
@@ -151,7 +249,8 @@ def engine_sample(rpm, frames, decel_amount=0.0):
         base_freq = 5.0
 
     phase_inc = 2.0 * math.pi * base_freq / SAMPLE_RATE
-    phase_array = phase + phase_inc * np.arange(frames, dtype=np.float32)
+    idx = _get_frame_idx(frames)
+    phase_array = phase + phase_inc * idx
     phase = (phase + phase_inc * frames) % (2.0 * math.pi)
 
     rpm_ratio = clamp((rpm - IDLE_RPM) / max(1.0, (MAX_RPM - IDLE_RPM)), 0.0, 1.0)
@@ -174,7 +273,7 @@ def engine_sample(rpm, frames, decel_amount=0.0):
 
     # ================= Pulses par cylindre =================
     width = clamp(0.5 - 0.25 * rpm_ratio, 0.12, 0.5)
-    cyl_offsets = np.linspace(0.0, 2.0 * math.pi, NUM_CYLINDERS, endpoint=False, dtype=np.float32)
+    cyl_offsets = _get_cyl_offsets()
     phases_cyl = phase_array[:, None] + cyl_offsets[None, :]
     phases_cyl_wrapped = (phases_cyl + math.pi) % (2.0 * math.pi) - math.pi
     pulses_cyl = np.exp(- (phases_cyl_wrapped / width) ** 2).astype(np.float32)
@@ -222,7 +321,7 @@ def engine_sample(rpm, frames, decel_amount=0.0):
     # ================= Enveloppe basse fréquence =================
     lump_freq = base_freq * (4.0 / max(4, NUM_CYLINDERS))
     env_inc = 2.0 * math.pi * lump_freq / SAMPLE_RATE
-    env_phase_array = env_phase + env_inc * np.arange(frames, dtype=np.float32)
+    env_phase_array = env_phase + env_inc * idx
     env_phase = (env_phase + env_inc * frames) % (2.0 * math.pi)
 
     envelope = 0.5 + 0.5 * np.sin(env_phase_array)
@@ -238,7 +337,7 @@ def engine_sample(rpm, frames, decel_amount=0.0):
     if WHINE_GAIN > 0.0:
         whine_freq = base_freq * (5.0 + 5.0 * rpm_ratio)
         whine_inc = 2.0 * math.pi * whine_freq / SAMPLE_RATE
-        whine_phases = whine_phase + whine_inc * np.arange(frames, dtype=np.float32)
+        whine_phases = whine_phase + whine_inc * idx
         whine_phase_end = whine_phase + whine_inc * frames
         whine_phase_end = math.fmod(whine_phase_end, 2.0 * math.pi)
         whine_phase = whine_phase_end
@@ -251,7 +350,7 @@ def engine_sample(rpm, frames, decel_amount=0.0):
 
     # Petit jitter pour "vivre" un peu
     jitter_amount = 0.003 + 0.01 * rpm_ratio
-    jitter = 1.0 + jitter_amount * np.random.randn(frames).astype(np.float32)
+    jitter = 1.0 + jitter_amount * white
     wave *= jitter
 
     wave = np.tanh(1.8 * wave)
@@ -268,10 +367,14 @@ def audio_callback(outdata, frames, time_info, status):
     Callback PortAudio : génère le son du moteur en continu.
     """
     global engine_rpm, throttle, running
-    global IDLE_RPM, MAX_RPM, LIMIT_RPM, _last_audio_log
+    global IDLE_RPM, MAX_RPM, LIMIT_RPM
+    global _status_count, _underflow_count, _last_status_text
 
     if status:
-        print("Status PortAudio:", status)
+        _status_count += 1
+        _last_status_text = str(status)
+        if getattr(status, "output_underflow", False):
+            _underflow_count += 1
 
     target_rpm = IDLE_RPM + throttle * (MAX_RPM - IDLE_RPM)
     target_rpm = clamp(target_rpm, IDLE_RPM, MAX_RPM)
@@ -298,11 +401,6 @@ def audio_callback(outdata, frames, time_info, status):
         samples *= mask
 
     outdata[:, 0] = samples
-
-    now = time.time()
-    if now - _last_audio_log > 1.0:
-        print(f"[AUDIO] rpm={engine_rpm:.0f} throttle={throttle:.2f}")
-        _last_audio_log = now
 
 
 def choose_output_device():
@@ -344,7 +442,7 @@ def start_engine_audio():
     Utilise le périphérique par défaut (comme pygame),
     sauf si AUDIO_DEVICE est défini.
     """
-    global _audio_stream
+    global _audio_stream, SAMPLE_RATE
 
     try:
         print("Périphérique audio par défaut sounddevice:", sd.default.device)
@@ -354,14 +452,29 @@ def start_engine_audio():
     device = choose_output_device()
     print(f"Device audio utilisé dans OutputStream : {device}")
 
+    sample_rate = _resolve_sample_rate(device)
+    if sample_rate != SAMPLE_RATE:
+        SAMPLE_RATE = sample_rate
+
+    blocksize = max(0, AUDIO_BLOCKSIZE)
+    latency = AUDIO_LATENCY
+    try:
+        latency = float(latency)
+    except (TypeError, ValueError):
+        pass
+    print(
+        f"OutputStream config: samplerate={SAMPLE_RATE} "
+        f"blocksize={blocksize} latency={latency}"
+    )
+
     _audio_stream = sd.OutputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
         dtype='float32',
         callback=audio_callback,
         device=device,   # None => device par défaut
-        blocksize=2048,
-        latency='high'
+        blocksize=blocksize,
+        latency=latency
     )
     _audio_stream.start()
     print("Flux audio moteur démarré.")

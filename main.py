@@ -192,6 +192,7 @@ def main():
     # 6) Boucle principale : tant que engine.running est True
     try:
         while engine.running:
+            engine.poll_audio_status()
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\nCtrl+C reçu, arrêt...")
