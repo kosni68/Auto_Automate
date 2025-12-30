@@ -1,17 +1,43 @@
 # Auto_Automate
 
 ## Préparer l'environnement
-1) Prérequis systèmes (Debian/Ubuntu) :
+1) Version Python recommandée : 3.12 (pygame a une roue binaire pour 3.12 sur ARM, pas pour 3.13).
+   - Si `python3.12` est dans apt :
+     ```bash
+     sudo apt-get update
+     sudo apt-get install python3.12 python3.12-venv
+     python3.12 -m venv .venv
+     source .venv/bin/activate
+     ```
+   - Sinon, installation via pyenv (confirmé fonctionnel) :
+     ```bash
+     sudo apt-get install -y build-essential curl git zlib1g-dev libssl-dev \
+       libbz2-dev libreadline-dev libsqlite3-dev libncursesw5-dev xz-utils tk-dev \
+       libffi-dev liblzma-dev
+     curl https://pyenv.run | bash
+     # Ajoute dans ~/.bashrc :
+     # export PATH="$HOME/.pyenv/bin:$PATH"
+     # eval "$(pyenv init -)"
+     # eval "$(pyenv virtualenv-init -)"
+     exec $SHELL  # recharge le shell
+
+     pyenv install 3.12.7
+     pyenv virtualenv 3.12.7 auto-automate
+     pyenv local auto-automate  # dans le repo
+     pip install --upgrade pip
+     pip install --prefer-binary -r requirements.txt
+     ```
+
+2) Prérequis systèmes (Debian/Ubuntu) :
    - `sudo apt-get install python3-venv python3-dev build-essential libportaudio2 libasound2-dev libsdl2-dev libsdl2-mixer-dev libsdl2-image-dev libsdl2-ttf-dev libfreetype6-dev libjpeg-dev zlib1g-dev`
    - Branche la manette THRUSTMASTER si tu utilises le potentiomètre.
-2) Crée un virtualenv et installe les dépendances Python :
+3) Crée un virtualenv (en Python 3.12) et installe les dépendances Python :
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   # si tu restes en Python 3.13, la compilation pygame échouera : privilégie 3.12
    pip install --upgrade pip
-   pip install -r requirements.txt
+   pip install --prefer-binary -r requirements.txt
    ```
-3) Lance le simulateur :
+4) Lance le simulateur :
    ```bash
    python main.py
    ```
