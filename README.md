@@ -2,7 +2,7 @@
 
 ## Préparer l'environnement
 1) Prérequis systèmes (Debian/Ubuntu) :
-   - `sudo apt-get install python3-venv python3-dev libportaudio2 libasound2-dev libsdl2-2.0-0 libsdl2-mixer-2.0-0`
+   - `sudo apt-get install python3-venv python3-dev build-essential libportaudio2 libasound2-dev libsdl2-dev libsdl2-mixer-dev libsdl2-image-dev libsdl2-ttf-dev libfreetype6-dev libjpeg-dev zlib1g-dev`
    - Branche la manette THRUSTMASTER si tu utilises le potentiomètre.
 2) Crée un virtualenv et installe les dépendances Python :
    ```bash
