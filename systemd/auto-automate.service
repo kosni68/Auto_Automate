@@ -1,0 +1,16 @@
+[Unit]
+Description=Auto Automate (moteur + klaxon/sirène)
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=rpi
+WorkingDirectory=/home/rpi/Auto_Automate
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/rpi/Auto_Automate/.venv/lib/python3.13/site-packages:/usr/lib/python3/dist-packages
+ExecStart=/home/rpi/Auto_Automate/.venv/bin/python /home/rpi/Auto_Automate/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

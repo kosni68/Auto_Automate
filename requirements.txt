@@ -1,5 +1,6 @@
 numpy>=1.25,<2.0
 sounddevice>=0.4,<0.5
-# pygame 2.5.x ne fournit pas de roue binaire pour Python 3.13/arm64 : utiliser Python 3.11/3.12
+# pygame officiel pour <3.13, pygame-ce pour 3.13+
 pygame>=2.5,<2.6; python_version<'3.13'
+pygame-ce>=2.5,<2.6; python_version>='3.13'
 evdev>=1.6,<1.7
